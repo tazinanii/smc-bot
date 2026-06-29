@@ -1,0 +1,16 @@
+services:
+  - type: worker
+    name: smc-bot
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    envVars:
+      - key: TOKEN
+        sync: false
+      - key: CHAT_ID
+        sync: false
+      - key: SYMBOL
+        value: BTC/USDT
+      - key: TIMEFRAME
+        value: 15m
