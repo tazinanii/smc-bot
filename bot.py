@@ -1,26 +1,19 @@
-# ═════════════════════════════════════════════════════════════════
-# تنظیمات - چند راه برای خواندن Variables
-# ═════════════════════════════════════════════════════════════════
-
+import ccxt
+import pandas as pd
+import requests
+import time
 import os
+from datetime import datetime
 
-# راه ۱: از os.environ
+# ═════════════════════════════════════════════════════════════════
+# تنظیمات از متغیرهای محیطی (Render Variables)
+# ═════════════════════════════════════════════════════════════════
+
 TOKEN = os.environ.get('TOKEN', '')
 CHAT_ID = os.environ.get('CHAT_ID', '')
 SYMBOL = os.environ.get('SYMBOL', 'BTC/USDT')
 TIMEFRAME = os.environ.get('TIMEFRAME', '15m')
 
-# راه ۲: اگه خالی بود، مستقیم بذار (فقط برای تست)
-if not TOKEN:
-    print("⚠️ WARNING: TOKEN از Environment خوانده نشد!")
-    TOKEN = "YOUR_BOT_TOKEN_HERE"  # ← اینجا رو پر کن
-
-if not CHAT_ID:
-    print("⚠️ WARNING: CHAT_ID از Environment خوانده نشد!")
-    CHAT_ID = "YOUR_CHAT_ID_HERE"  # ← اینجا رو پر کن
-
-print(f"✅ TOKEN length: {len(TOKEN)}")
-print(f"✅ CHAT_ID: {CHAT_ID}")
 # ═════════════════════════════════════════════════════════════════
 # توابع تلگرام
 # ═════════════════════════════════════════════════════════════════
@@ -28,170 +21,46 @@ print(f"✅ CHAT_ID: {CHAT_ID}")
 def send_telegram(text):
     try:
         url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-        
-        print(f"🔍 DEBUG: TOKEN length = {len(TOKEN)}")
-        print(f"🔍 DEBUG: CHAT_ID = {CHAT_ID}")
-        print(f"🔍 DEBUG: URL = {url[:50]}...")
-        
-        response = requests.post(url, json={
+        requests.post(url, json={
             'chat_id': CHAT_ID,
             'text': text,
             'parse_mode': 'HTML'
         }, timeout=10)
-        
-        print(f"🔍 DEBUG: Status Code = {response.status_code}")
-        print(f"🔍 DEBUG: Response = {response.text[:200]}")
-        
-        if response.status_code == 200:
-            print(f"📨 ارسال شد")
-        else:
-            print(f"❌ خطای HTTP: {response.status_code}")
-            
+        print(f"📨 ارسال شد")
     except Exception as e:
         print(f"❌ خطا: {e}")
-        import traceback
-        print(f"❌ traceback: {traceback.format_exc()}")
 
 # ═════════════════════════════════════════════════════════════════
-# TOOBIT API
-# ═════════════════════════════════════════════════════════════════
-# ═════════════════════════════════════════════════════════════════
-# TOOBIT API KEY (اختیاری)
-# ═════════════════════════════════════════════════════════════════
-
-TOOBIT_API_KEY = os.environ.get('fFu7e9T98nmQl9leDejtsTOdKyKjcQyjQUbkuLGhcJSuqSJEB7y0I3Nmq3pe3OWP', '')
-TOOBIT_API_SECRET = os.environ.get('TOOBIT_API_SECRET', '')
-def get_data_toobit():
-    """دریافت داده از Toobit API"""
-    try:
-        print("🔄 تلاش با Toobit...")
-        
-        # Toobit API endpoint
-        base_url = "https://api.toobit.com"
-        
-        # تبدیل SYMBOL به فرمت Toobit (BTC/USDT → BTCUSDT)
-        symbol_toobit = SYMBOL.replace('/', '')
-        
-        # تبدیل TIMEFRAME
-        interval_map = {
-            '1m': '1',
-            '5m': '5',
-            '15m': '15',
-            '30m': '30',
-            '1h': '60',
-            '4h': '240',
-            '1d': 'D'
-        }
-        interval = interval_map.get(TIMEFRAME, '15')
-        
-        # Kline/Candlestick data
-        endpoint = "/api/v1/market/kline"
-        
-        params = {
-            'symbol': symbol_toobit,
-            'interval': interval,
-            'limit': 100
-        }
-        
-        # اگه API Key داری، اضافه کن
-        headers = {}
-        if TOOBIT_API_KEY:
-            import hashlib
-            import hmac
-            
-            timestamp = str(int(time.time() * 1000))
-            query_string = '&'.join([f"{k}={v}" for k, v in sorted(params.items())])
-            
-            # امضا
-            signature = hmac.new(
-                TOOBIT_API_SECRET.encode('utf-8'),
-                query_string.encode('utf-8'),
-                hashlib.sha256
-            ).hexdigest()
-            
-            headers = {
-                'X-API-KEY': TOOBIT_API_KEY,
-                'X-TIMESTAMP': timestamp,
-                'X-SIGNATURE': signature
-            }
-            print("🔑 Using Toobit API Key")
-        
-        response = requests.get(f"{base_url}{endpoint}", params=params, headers=headers, timeout=10)
-        data = response.json()
-        
-        if data.get('code') == '0' and data.get('data'):
-            klines = data['data']
-            
-            # تبدیل به DataFrame
-            df_data = []
-            for k in klines:
-                df_data.append({
-                    'timestamp': int(k[0]),
-                    'open': float(k[1]),
-                    'high': float(k[2]),
-                    'low': float(k[3]),
-                    'close': float(k[4]),
-                    'volume': float(k[5])
-                })
-            
-            df = pd.DataFrame(df_data)
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-            print(f"✅ متصل به Toobit")
-            return df.set_index('timestamp')
-        else:
-            print(f"❌ Toobit خطا: {data}")
-            return None
-            
-    except Exception as e:
-        print(f"❌ Toobit خطا: {e}")
-        return None
-
-# ═════════════════════════════════════════════════════════════════
-# CCXT EXCHANGES
-# ═════════════════════════════════════════════════════════════════
-
-def get_data_ccxt():
-    """دریافت داده از صرافی‌های CCXT"""
-    exchanges = [
-        ccxt.kucoin({'enableRateLimit': True}),
-        ccxt.bybit({'enableRateLimit': True}),
-        ccxt.binance({'enableRateLimit': True}),
-    ]
-    
-    for ex in exchanges:
-        try:
-            print(f"🔄 تلاش با {ex.id}...")
-            ohlcv = ex.fetch_ohlcv(SYMBOL, TIMEFRAME, limit=100)
-            if ohlcv:
-                df = pd.DataFrame(ohlcv, columns=['timestamp','open','high','low','close','volume'])
-                df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-                print(f"✅ متصل به {ex.id}")
-                return df.set_index('timestamp')
-        except Exception as e:
-            print(f"❌ {ex.id} خطا: {e}")
-            continue
-    
-    return None
-
-# ═════════════════════════════════════════════════════════════════
-# دریافت داده (همه صرافی‌ها)
+# دریافت داده
 # ═════════════════════════════════════════════════════════════════
 
 def get_data():
-    """تلاش با همه صرافی‌ها"""
-    
-    # اول Toobit
-    df = get_data_toobit()
-    if df is not None:
-        return df
-    
-    # بعد CCXT
-    df = get_data_ccxt()
-    if df is not None:
-        return df
-    
-    print("❌ هیچ صرافی‌ای کار نکرد")
-    return None
+    try:
+        exchanges = [
+            ccxt.kucoin({'enableRateLimit': True}),
+            ccxt.bybit({'enableRateLimit': True}),
+            ccxt.binance({'enableRateLimit': True}),
+        ]
+        
+        for ex in exchanges:
+            try:
+                print(f"🔄 تلاش با {ex.id}...")
+                ohlcv = ex.fetch_ohlcv(SYMBOL, TIMEFRAME, limit=100)
+                if ohlcv:
+                    df = pd.DataFrame(ohlcv, columns=['timestamp','open','high','low','close','volume'])
+                    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+                    print(f"✅ متصل به {ex.id}")
+                    return df.set_index('timestamp')
+            except Exception as e:
+                print(f"❌ {ex.id} خطا: {e}")
+                continue
+        
+        print("❌ هیچ صرافی‌ای کار نکرد")
+        return None
+        
+    except Exception as e:
+        print(f"❌ خطا: {e}")
+        return None
 
 # ═════════════════════════════════════════════════════════════════
 # اندیکاتورها
@@ -341,11 +210,9 @@ def format_msg(s):
 
 print("🚀 ربات SMC شروع شد!")
 print(f"💱 {SYMBOL} | ⏱️ {TIMEFRAME}")
-print("💱 صرافی‌ها: Toobit, KuCoin, Bybit, Binance")
 
 send_telegram("🚀 <b>ربات SMC فعال شد!</b>\n"
               f"💱 {SYMBOL} | ⏱️ {TIMEFRAME}\n"
-              "💱 صرافی‌ها: Toobit, KuCoin, Bybit, Binance\n"
               "⏳ منتظر سیگنال...")
 
 last_time = None
