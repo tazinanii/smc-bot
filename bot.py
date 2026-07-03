@@ -21,14 +21,29 @@ TIMEFRAME = os.environ.get('TIMEFRAME', '15m')
 def send_telegram(text):
     try:
         url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-        requests.post(url, json={
+        
+        print(f"🔍 DEBUG: TOKEN length = {len(TOKEN)}")
+        print(f"🔍 DEBUG: CHAT_ID = {CHAT_ID}")
+        print(f"🔍 DEBUG: URL = {url[:50]}...")
+        
+        response = requests.post(url, json={
             'chat_id': CHAT_ID,
             'text': text,
             'parse_mode': 'HTML'
         }, timeout=10)
-        print(f"📨 ارسال شد")
+        
+        print(f"🔍 DEBUG: Status Code = {response.status_code}")
+        print(f"🔍 DEBUG: Response = {response.text[:200]}")
+        
+        if response.status_code == 200:
+            print(f"📨 ارسال شد")
+        else:
+            print(f"❌ خطای HTTP: {response.status_code}")
+            
     except Exception as e:
         print(f"❌ خطا: {e}")
+        import traceback
+        print(f"❌ traceback: {traceback.format_exc()}")
 
 # ═════════════════════════════════════════════════════════════════
 # TOOBIT API
