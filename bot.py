@@ -1,19 +1,26 @@
-import ccxt
-import pandas as pd
-import requests
-import time
+# ═════════════════════════════════════════════════════════════════
+# تنظیمات - چند راه برای خواندن Variables
+# ═════════════════════════════════════════════════════════════════
+
 import os
-from datetime import datetime
 
-# ═════════════════════════════════════════════════════════════════
-# تنظیمات از متغیرهای محیطی (Render Variables)
-# ═════════════════════════════════════════════════════════════════
-
-TOKEN = os.environ.get('8871815584:AAEqHlkmVB75GwHbjWKcnLQNG53zMA19Udc', '')
-CHAT_ID = os.environ.get('1310655410', '')
+# راه ۱: از os.environ
+TOKEN = os.environ.get('TOKEN', '')
+CHAT_ID = os.environ.get('CHAT_ID', '')
 SYMBOL = os.environ.get('SYMBOL', 'BTC/USDT')
 TIMEFRAME = os.environ.get('TIMEFRAME', '15m')
 
+# راه ۲: اگه خالی بود، مستقیم بذار (فقط برای تست)
+if not TOKEN:
+    print("⚠️ WARNING: TOKEN از Environment خوانده نشد!")
+    TOKEN = "YOUR_BOT_TOKEN_HERE"  # ← اینجا رو پر کن
+
+if not CHAT_ID:
+    print("⚠️ WARNING: CHAT_ID از Environment خوانده نشد!")
+    CHAT_ID = "YOUR_CHAT_ID_HERE"  # ← اینجا رو پر کن
+
+print(f"✅ TOKEN length: {len(TOKEN)}")
+print(f"✅ CHAT_ID: {CHAT_ID}")
 # ═════════════════════════════════════════════════════════════════
 # توابع تلگرام
 # ═════════════════════════════════════════════════════════════════
