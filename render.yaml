@@ -3,9 +3,7 @@ services:
     name: smc-bot
     runtime: python
     plan: free
-    buildCommand: |
-      pip install --upgrade pip
-      pip install ccxt pandas requests numpy
+    buildCommand: pip install -r requirements.txt
     startCommand: python bot.py
     envVars:
       - key: TOKEN
