@@ -23,14 +23,10 @@ SYMBOLS = [
     'LINK/USDT', 'POL/USDT'
 ]
 
-# تنظیم لاگ
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s | %(levelname)s | %(message)s',
-    handlers=[
-        logging.FileHandler('bot.log'),
-        logging.StreamHandler()
-    ]
+    handlers=[logging.FileHandler('bot.log'), logging.StreamHandler()]
 )
 logger = logging.getLogger(__name__)
 
@@ -47,14 +43,13 @@ class TelegramNotifier:
     def send(self, text: str, parse_mode: str = 'HTML') -> bool:
         if not self.token or not self.chat_id:
             return False
-        
         try:
-            response = requests.post(
+            r = requests.post(
                 f"{self.base_url}/sendMessage",
                 json={'chat_id': self.chat_id, 'text': text, 'parse_mode': parse_mode},
                 timeout=15
             )
-            return response.status_code == 200
+            return r.status_code == 200
         except Exception as e:
             logger.error(f"❌ تلگرام: {e}")
             return False
@@ -63,7 +58,7 @@ class TelegramNotifier:
         self.send(f"🚀 <b>ربات فعال شد!</b>\n📊 {len(SYMBOLS)} جفت‌ارز | ⏱️ {TIMEFRAME}")
 
 # ═════════════════════════════════════════════════════════════════
-# دیتا — فقط KuCoin با rate limit درست
+# دیتا — فقط KuCoin با rate limit
 # ═════════════════════════════════════════════════════════════════
 
 class DataFetcher:
@@ -72,40 +67,34 @@ class DataFetcher:
             'enableRateLimit': True,
             'options': {'defaultType': 'spot'}
         })
-        self.last_request_time = 0
-        self.min_delay = 1.2  # ثانیه بین هر درخواست
+        self.last_request = 0
+        self.min_delay = 1.5  # ثانیه بین هر درخواست
     
-    def fetch(self, symbol: str, timeframe: str, limit: int = 200) -> Optional[pd.DataFrame]:
-        # صبر برای رعایت rate limit
-        elapsed = time.time() - self.last_request_time
+    def fetch(self, symbol: str, tf: str, limit: int = 200) -> Optional[pd.DataFrame]:
+        # Rate limit
+        elapsed = time.time() - self.last_request
         if elapsed < self.min_delay:
-            sleep_time = self.min_delay - elapsed
-            logger.debug(f"⏳ Rate limit sleep: {sleep_time:.2f}s")
-            time.sleep(sleep_time)
+            time.sleep(self.min_delay - elapsed)
         
-        for attempt in range(3):  # 3 بار تلاش
+        for attempt in range(3):
             try:
-                self.last_request_time = time.time()
-                ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
-                
+                self.last_request = time.time()
+                ohlcv = self.exchange.fetch_ohlcv(symbol, tf, limit=limit)
                 if ohlcv and len(ohlcv) > 50:
                     df = pd.DataFrame(ohlcv, columns=[
                         'timestamp', 'open', 'high', 'low', 'close', 'volume'
                     ])
                     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-                    logger.info(f"✅ {symbol} ({len(df)} کندل)")
                     return df.set_index('timestamp')
-                    
             except ccxt.RateLimitExceeded:
-                wait = 2 ** attempt  # 1, 2, 4 ثانیه
+                wait = 3 ** attempt
                 logger.warning(f"⏳ Rate limit {symbol}, صبر {wait}s...")
                 time.sleep(wait)
-                
             except Exception as e:
-                logger.warning(f"⚠️ {symbol} تلاش {attempt+1}: {str(e)[:60]}")
+                logger.warning(f"⚠️ {symbol}: {str(e)[:80]}")
                 time.sleep(1)
         
-        logger.error(f"❌ {symbol}: هیچ دیتایی دریافت نشد")
+        logger.error(f"❌ {symbol}: دیتا دریافت نشد")
         return None
 
 # ═════════════════════════════════════════════════════════════════
@@ -117,15 +106,11 @@ class Indicators:
     def add_all(df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
         
-        # EMA
-        for period in [8, 21, 55, 200]:
-            df[f'ema{period}'] = df['close'].ewm(span=period, adjust=False).mean()
+        for p in [8, 21, 55, 200]:
+            df[f'ema{p}'] = df['close'].ewm(span=p, adjust=False).mean()
         
-        # SMA
         df['sma50'] = df['close'].rolling(50).mean()
-        df['sma200'] = df['close'].rolling(200).mean()
         
-        # ATR
         hl = df['high'] - df['low']
         hc = abs(df['high'] - df['close'].shift())
         lc = abs(df['low'] - df['close'].shift())
@@ -133,26 +118,21 @@ class Indicators:
         df['atr'] = tr.rolling(14).mean()
         df['atr_pct'] = df['atr'] / df['close'] * 100
         
-        # RSI
         delta = df['close'].diff()
         gain = delta.where(delta > 0, 0).rolling(14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-        rs = gain / loss
-        df['rsi'] = 100 - (100 / (1 + rs))
+        df['rsi'] = 100 - (100 / (1 + gain / loss))
         
-        # MACD
         ema12 = df['close'].ewm(span=12, adjust=False).mean()
         ema26 = df['close'].ewm(span=26, adjust=False).mean()
         df['macd'] = ema12 - ema26
         df['macd_signal'] = df['macd'].ewm(span=9, adjust=False).mean()
         
-        # Bollinger
         df['bb_mid'] = df['close'].rolling(20).mean()
         bb_std = df['close'].rolling(20).std()
         df['bb_upper'] = df['bb_mid'] + 2 * bb_std
         df['bb_lower'] = df['bb_mid'] - 2 * bb_std
         
-        # Volume
         df['vol_ma'] = df['volume'].rolling(20).mean()
         df['vol_ratio'] = df['volume'] / df['vol_ma']
         
@@ -163,8 +143,7 @@ class Indicators:
 # ═════════════════════════════════════════════════════════════════
 
 class SignalResult:
-    def __init__(self, signal: str, entry: float, sl: float, tp1: float, tp2: float,
-                 strategy: str, confidence: int, reasons: List[str], df: pd.DataFrame):
+    def __init__(self, signal, entry, sl, tp1, tp2, strategy, confidence, reasons, df):
         self.signal = signal
         self.entry = entry
         self.sl = sl
@@ -176,24 +155,19 @@ class SignalResult:
         self.df = df
         self.time = df.index[-1]
     
-    def rr(self, target: float) -> float:
-        if self.signal == 'LONG':
-            risk = self.entry - self.sl
-            reward = target - self.entry
-        else:
-            risk = self.sl - self.entry
-            reward = self.entry - target
+    def rr(self, target):
+        risk = abs(self.entry - self.sl)
+        reward = abs(target - self.entry)
         return round(reward / risk, 2) if risk > 0 else 0
 
 class StrategyEngine:
-    def __init__(self, df: pd.DataFrame):
+    def __init__(self, df):
         self.df = df
         self.last = df.iloc[-1]
         self.prev = df.iloc[-2]
         self.prev2 = df.iloc[-3]
     
-    def ema_cross(self) -> Optional[SignalResult]:
-        """EMA8 کراس بالای EMA21"""
+    def ema_cross(self):
         prev_cross = self.prev['ema8'] <= self.prev['ema21']
         now_cross = self.last['ema8'] > self.last['ema21']
         
@@ -224,12 +198,10 @@ class StrategyEngine:
         
         return SignalResult('LONG', entry, sl, tp1, tp2, 'EMA Cross', confidence, reasons, self.df)
     
-    def rsi_divergence(self) -> Optional[SignalResult]:
-        """واگرایی RSI صعودی"""
+    def rsi_divergence(self):
         lows = self.df['low'].iloc[-20:-1]
         rsi_vals = self.df['rsi'].iloc[-20:-1]
         
-        # پیدا کردن دو کف
         min_idx = lows.rolling(5, center=True).min() == lows
         recent_lows = lows[min_idx]
         recent_rsi = rsi_vals[min_idx]
@@ -257,8 +229,7 @@ class StrategyEngine:
         
         return SignalResult('LONG', entry, sl, tp1, tp2, 'RSI Div', confidence, reasons, self.df)
     
-    def breakout(self) -> Optional[SignalResult]:
-        """شکست سقف ۲۰ کندل اخیر"""
+    def breakout(self):
         recent_high = self.df['high'].iloc[-20:-2].max()
         
         if not (self.last['close'] > recent_high and self.last['close'] > self.last['open']):
@@ -284,8 +255,7 @@ class StrategyEngine:
         
         return SignalResult('LONG', entry, sl, tp1, tp2, 'Breakout', confidence, reasons, self.df)
     
-    def bollinger_bounce(self) -> Optional[SignalResult]:
-        """برخورد از باند پایینی بولینگر"""
+    def bollinger_bounce(self):
         touched = (self.df['low'].iloc[-5:-1] <= self.df['bb_lower'].iloc[-5:-1]).any()
         bounce = self.last['close'] > self.last['bb_lower'] and self.last['close'] > self.last['open']
         
@@ -311,28 +281,25 @@ class StrategyEngine:
         
         return SignalResult('LONG', entry, sl, tp1, tp2, 'BB Bounce', confidence, reasons, self.df)
     
-    def analyze(self) -> Optional[SignalResult]:
-        """اجرای همه استراتژی‌ها"""
+    def analyze(self):
         signals = []
-        
         for strategy in [self.ema_cross, self.rsi_divergence, self.breakout, self.bollinger_bounce]:
             try:
                 sig = strategy()
                 if sig:
                     signals.append(sig)
             except Exception as e:
-                logger.debug(f"خطا: {e}")
+                pass
         
         if not signals:
             return None
-        
         return max(signals, key=lambda x: x.confidence)
 
 # ═════════════════════════════════════════════════════════════════
 # فرمت پیام
 # ═════════════════════════════════════════════════════════════════
 
-def format_signal(symbol: str, sig: SignalResult) -> str:
+def format_signal(symbol, sig):
     emoji = "🟢" if sig.signal == 'LONG' else "🔴"
     stars = "⭐" * (sig.confidence // 20)
     
@@ -360,10 +327,10 @@ def format_signal(symbol: str, sig: SignalResult) -> str:
 # مدیریت زمان
 # ═════════════════════════════════════════════════════════════════
 
-def get_tf_minutes(tf: str) -> int:
+def get_tf_minutes(tf):
     return {'1m': 1, '5m': 5, '15m': 15, '30m': 30, '1h': 60, '4h': 240, '1d': 1440}.get(tf, 15)
 
-def wait_next_candle(tf: str):
+def wait_next_candle(tf):
     minutes = get_tf_minutes(tf)
     now = datetime.now(timezone.utc)
     
@@ -375,7 +342,7 @@ def wait_next_candle(tf: str):
     
     wait = (next_candle - now).total_seconds()
     if wait > 0:
-        logger.info(f"⏳ صبر {wait:.0f}s تا کندل بعدی...")
+        logger.info(f"⏳ صبر {wait:.0f}s...")
         time.sleep(wait)
 
 # ═════════════════════════════════════════════════════════════════
@@ -388,7 +355,7 @@ def main():
     sent = {}
     
     telegram.send_startup()
-    logger.info(f"🚀 ربات شروع شد | {len(SYMBOLS)} جفت‌ارز | {TIMEFRAME}")
+    logger.info(f"🚀 شروع | {len(SYMBOLS)} جفت‌ارز | {TIMEFRAME}")
     
     while True:
         start = time.time()
@@ -402,10 +369,17 @@ def main():
                 
                 df = Indicators.add_all(df)
                 
-                # دیباگ: وضعیت فعلی
+                # 🔍 دیباگ
                 last = df.iloc[-1]
-                logger.info(f"🔍 {symbol} | EMA8:{last['ema8']:.0f} EMA21:{last['ema21']:.0f} "
-                           f"RSI:{last['rsi']:.1f} VOL:{last['vol_ratio']:.1f}x")
+                prev = df.iloc[-2]
+                ema_crossed = prev['ema8'] <= prev['ema21'] and last['ema8'] > last['ema21']
+                logger.info(
+                    f"🔍 {symbol} | "
+                    f"EMA8:{last['ema8']:.0f} EMA21:{last['ema21']:.0f} "
+                    f"EMA55:{last['ema55']:.0f} "
+                    f"RSI:{last['rsi']:.1f} VOL:{last['vol_ratio']:.1f}x "
+                    f"Cross:{ema_crossed}"
+                )
                 
                 engine = StrategyEngine(df)
                 signal = engine.analyze()
