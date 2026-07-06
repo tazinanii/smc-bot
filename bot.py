@@ -6,7 +6,7 @@ import time
 import os
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, List
 
 # ═════════════════════════════════════════════════════════════════
@@ -17,10 +17,11 @@ TOKEN = os.environ.get('TOKEN', '')
 CHAT_ID = os.environ.get('CHAT_ID', '')
 TIMEFRAME = os.environ.get('TIMEFRAME', '15m')
 
+# ⚠️ MATIC به POL تغییر نام داده
 SYMBOLS = [
     'BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 
     'XRP/USDT', 'DOGE/USDT', 'ADA/USDT', 'AVAX/USDT',
-    'LINK/USDT', 'MATIC/USDT'
+    'LINK/USDT', 'POL/USDT'  # ← تغییر از MATIC
 ]
 
 # تنظیم لاگ
@@ -64,7 +65,7 @@ class TelegramNotifier:
                 logger.info("📨 پیام ارسال شد")
                 return True
             else:
-                logger.error(f"❌ خطای تلگرام: {response.status_code} - {response.text}")
+                logger.error(f"❌ خطای تلگرام: {response.status_code}")
                 return False
         except Exception as e:
             logger.error(f"❌ خطا در ارسال تلگرام: {e}")
@@ -76,42 +77,36 @@ class TelegramNotifier:
 
 📊 جفت‌ارزها: {len(SYMBOLS)} عدد
 ⏱️ تایم‌فریم: {TIMEFRAME}
-🔍 استراتژی‌ها: EMA Cross + RSI Div + Breakout
+🔍 استراتژی‌ها: EMA Cross + RSI Div + Breakout + BB Bounce
 
 ⏳ اسکن شروع شد...
 """
         self.send(msg)
 
 # ═════════════════════════════════════════════════════════════════
-# دیتا
+# دیتا - فقط KuCoin چون Binance/Bybit از IP Render بلاک شدن
 # ═════════════════════════════════════════════════════════════════
 
 class DataFetcher:
     def __init__(self):
-        self.exchanges = [
-            ccxt.binance({'enableRateLimit': True}),
-            ccxt.bybit({'enableRateLimit': True}),
-            ccxt.kucoin({'enableRateLimit': True}),
-        ]
-        self.current_exchange = 0
+        # فقط KuCoin — Binance و Bybit از IP Render بلاک هستن
+        self.exchange = ccxt.kucoin({
+            'enableRateLimit': True,
+            'options': {'defaultType': 'spot'}
+        })
     
     def fetch(self, symbol: str, timeframe: str, limit: int = 200) -> Optional[pd.DataFrame]:
-        """دریافت دیتا با fallback بین صرافی‌ها"""
-        for i in range(len(self.exchanges)):
-            ex = self.exchanges[(self.current_exchange + i) % len(self.exchanges)]
-            try:
-                ohlcv = ex.fetch_ohlcv(symbol, timeframe, limit=limit)
-                if ohlcv and len(ohlcv) > 50:
-                    df = pd.DataFrame(ohlcv, columns=[
-                        'timestamp', 'open', 'high', 'low', 'close', 'volume'
-                    ])
-                    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-                    self.current_exchange = (self.current_exchange + i) % len(self.exchanges)
-                    logger.info(f"✅ {symbol} از {ex.id} ({len(df)} کندل)")
-                    return df.set_index('timestamp')
-            except Exception as e:
-                logger.warning(f"⚠️ {ex.id} برای {symbol} خطا: {str(e)[:50]}")
-                continue
+        try:
+            ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+            if ohlcv and len(ohlcv) > 50:
+                df = pd.DataFrame(ohlcv, columns=[
+                    'timestamp', 'open', 'high', 'low', 'close', 'volume'
+                ])
+                df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+                logger.info(f"✅ {symbol} از KuCoin ({len(df)} کندل)")
+                return df.set_index('timestamp')
+        except Exception as e:
+            logger.warning(f"⚠️ KuCoin برای {symbol} خطا: {str(e)[:80]}")
         
         logger.error(f"❌ هیچ صرافی‌ای برای {symbol} کار نکرد")
         return None
@@ -163,10 +158,6 @@ class Indicators:
         df['vol_ma'] = df['volume'].rolling(20).mean()
         df['vol_ratio'] = df['volume'] / df['vol_ma']
         
-        # Swing High/Low
-        df['swing_high'] = df['high'].rolling(5, center=True).max() == df['high']
-        df['swing_low'] = df['low'].rolling(5, center=True).min() == df['low']
-        
         return df
 
 # ═════════════════════════════════════════════════════════════════
@@ -182,7 +173,7 @@ class SignalResult:
         self.tp1 = tp1
         self.tp2 = tp2
         self.strategy = strategy
-        self.confidence = confidence  # 1-100
+        self.confidence = confidence
         self.reasons = reasons
         self.df = df
         self.time = df.index[-1]
@@ -205,15 +196,12 @@ class StrategyEngine:
     
     # ─── استراتژی ۱: EMA Crossover ─────────────────────────────
     def ema_cross(self) -> Optional[SignalResult]:
-        """EMA 8 کراس EMA 21 + تایید RSI و حجم"""
-        # کراس صعودی
         prev_cross = self.prev['ema8'] <= self.prev['ema21']
         now_cross = self.last['ema8'] > self.last['ema21']
         
         if not (prev_cross and now_cross):
             return None
         
-        # تاییدها
         ema_trend = self.last['ema21'] > self.last['ema55']
         rsi_ok = 40 < self.last['rsi'] < 70
         vol_ok = self.last['vol_ratio'] > 1.1
@@ -247,11 +235,9 @@ class StrategyEngine:
     
     # ─── استراتژی ۲: RSI Divergence ────────────────────────────
     def rsi_divergence(self) -> Optional[SignalResult]:
-        """واگرایی RSI با قیمت"""
         lows = self.df['low'].iloc[-20:-1]
         rsi_vals = self.df['rsi'].iloc[-20:-1]
         
-        # دو کف اخیر
         recent_lows = lows[lows == lows.rolling(5, center=True).min()]
         recent_rsi = rsi_vals[lows == lows.rolling(5, center=True).min()]
         
@@ -261,11 +247,9 @@ class StrategyEngine:
         low1, low2 = recent_lows.iloc[-2], recent_lows.iloc[-1]
         rsi1, rsi2 = recent_rsi.iloc[-2], recent_rsi.iloc[-1]
         
-        # واگرایی صعودی: قیمت پایین‌تر، RSI بالاتر
         if not (low2 < low1 and rsi2 > rsi1):
             return None
         
-        # تایید
         ema_ok = self.last['close'] > self.last['ema55']
         vol_ok = self.last['vol_ratio'] > 1.0
         
@@ -288,11 +272,9 @@ class StrategyEngine:
     
     # ─── استراتژی ۳: Breakout ─────────────────────────────────
     def breakout(self) -> Optional[SignalResult]:
-        """شکست سقف/کف اخیر با حجم بالا"""
         recent_high = self.df['high'].iloc[-20:-2].max()
         recent_low = self.df['low'].iloc[-20:-2].min()
         
-        # شکست سقف
         if self.last['close'] > recent_high and self.last['close'] > self.last['open']:
             vol_ok = self.last['vol_ratio'] > 1.3
             ema_ok = self.last['close'] > self.last['ema55']
@@ -321,7 +303,6 @@ class StrategyEngine:
     
     # ─── استراتژی ۴: Bollinger Bounce ──────────────────────────
     def bollinger_bounce(self) -> Optional[SignalResult]:
-        """برخورد از باندهای بولینگر"""
         touched_lower = (self.df['low'].iloc[-5:-1] <= self.df['bb_lower'].iloc[-5:-1]).any()
         now_bounce = self.last['close'] > self.last['bb_lower'] and self.last['close'] > self.last['open']
         
@@ -351,7 +332,6 @@ class StrategyEngine:
         return SignalResult('LONG', entry, sl, tp1, tp2, 'BB Bounce', confidence, reasons, self.df)
     
     def analyze(self) -> Optional[SignalResult]:
-        """اجرای همه استراتژی‌ها و انتخاب بهترین"""
         signals = []
         
         for strategy in [self.ema_cross, self.rsi_divergence, self.breakout, self.bollinger_bounce]:
@@ -365,7 +345,6 @@ class StrategyEngine:
         if not signals:
             return None
         
-        # انتخاب بهترین (بالاترین confidence)
         best = max(signals, key=lambda x: x.confidence)
         return best
 
@@ -409,11 +388,9 @@ def get_timeframe_minutes(tf: str) -> int:
     return mapping.get(tf, 15)
 
 def wait_for_next_candle(tf: str):
-    """صبر تا بسته شدن کندل فعلی + ۵ ثانیه"""
     minutes = get_timeframe_minutes(tf)
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)  # ← اصلاح utcnow()
     
-    # زمان شروع کندل بعدی
     next_minute = ((now.minute // minutes) + 1) * minutes
     if next_minute >= 60:
         next_candle = (now + timedelta(hours=1)).replace(
@@ -434,7 +411,7 @@ def wait_for_next_candle(tf: str):
 def main():
     telegram = TelegramNotifier(TOKEN, CHAT_ID)
     fetcher = DataFetcher()
-    sent_signals = {}  # جلوگیری از تکرار
+    sent_signals = {}
     
     telegram.send_startup()
     logger.info(f"🚀 ربات شروع شد | {len(SYMBOLS)} جفت‌ارز | تایم‌فریم {TIMEFRAME}")
@@ -445,44 +422,45 @@ def main():
         
         for symbol in SYMBOLS:
             try:
-                # دریافت دیتا
                 df = fetcher.fetch(symbol, TIMEFRAME)
                 if df is None or len(df) < 60:
                     continue
                 
-                # محاسبه اندیکاتورها
                 df = Indicators.add_all(df)
                 
-                # بررسی سیگنال
+                # 🔍 دیباگ: چاپ وضعیت فعلی
+                last = df.iloc[-1]
+                logger.info(f"🔍 {symbol} | EMA8:{last['ema8']:.1f} EMA21:{last['ema21']:.1f} "
+                           f"RSI:{last['rsi']:.1f} VOL:{last['vol_ratio']:.1f}x")
+                
                 engine = StrategyEngine(df)
                 signal = engine.analyze()
                 
                 if signal:
-                    # جلوگیری از تکرار (۱۲ ساعت)
                     key = f"{symbol}_{signal.time.strftime('%Y%m%d%H')}"
                     if key in sent_signals:
                         continue
                     
-                    # ارسال
                     msg = format_signal(symbol, signal)
                     if telegram.send(msg):
                         sent_signals[key] = True
                         found_signals += 1
                         logger.info(f"✅ سیگنال {symbol}: {signal.strategy} ({signal.confidence}%)")
+                else:
+                    logger.info(f"❌ {symbol}: هیچ سیگنالی")
                 
             except Exception as e:
                 logger.error(f"❌ خطا در {symbol}: {e}")
                 continue
         
         # پاک کردن سیگنال‌های قدیمی
-        cutoff = datetime.utcnow() - timedelta(hours=12)
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=12)  # ← اصلاح utcnow()
         sent_signals = {k: v for k, v in sent_signals.items() 
-                       if datetime.strptime(k.split('_')[1], '%Y%m%d%H') > cutoff}
+                       if datetime.strptime(k.split('_')[1], '%Y%m%d%H').replace(tzinfo=timezone.utc) > cutoff}
         
         cycle_time = time.time() - cycle_start
         logger.info(f"🏁 دور کامل: {cycle_time:.1f}s | سیگنال: {found_signals}")
         
-        # صبر تا کندل بعدی
         wait_for_next_candle(TIMEFRAME)
 
 if __name__ == '__main__':
