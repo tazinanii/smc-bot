@@ -16,6 +16,7 @@ TOKEN = os.environ.get('TOKEN', '')
 CHAT_ID = os.environ.get('CHAT_ID', '')
 TIMEFRAME = os.environ.get('TIMEFRAME', '15m')
 
+# ⚠️ MATIC به POL تغییر نام داده
 SYMBOLS = [
     'BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 
     'XRP/USDT', 'DOGE/USDT', 'ADA/USDT', 'AVAX/USDT',
@@ -57,7 +58,7 @@ class TelegramNotifier:
         self.send(f"🚀 <b>ربات فعال شد!</b>\n📊 {len(SYMBOLS)} جفت‌ارز | ⏱️ {TIMEFRAME}")
 
 # ═════════════════════════════════════════════════════════════════
-# دیتا
+# دیتا — فقط KuCoin
 # ═════════════════════════════════════════════════════════════════
 
 class DataFetcher:
@@ -134,13 +135,10 @@ class Indicators:
         df['vol_ma'] = df['volume'].rolling(20).mean()
         df['vol_ratio'] = df['volume'] / df['vol_ma']
         
-        # 🔥 جدید: فاصله از سقف اخیر
-        df['dist_from_high'] = (df['close'] - df['high'].rolling(50).max()) / df['high'].rolling(50).max() * 100
-        
         return df
 
 # ═════════════════════════════════════════════════════════════════
-# استراتژی: فقط "Buy the Dip"
+# استراتژی: Buy the Dip
 # ═════════════════════════════════════════════════════════════════
 
 class SignalResult:
@@ -179,32 +177,26 @@ class StrategyEngine:
         dip_pct = (recent_high - self.last['close']) / recent_high * 100
         
         if dip_pct < 3.0:
-            logger.info(f"🚫 {self.last.name}: Dip کافی نیست ({dip_pct:.1f}%)")
             return None
         
         # ۲. RSI باید < ۴۰ باشه (oversold)
         if self.last['rsi'] > 40:
-            logger.info(f"🚫 {self.last.name}: RSI بالاست ({self.last['rsi']:.1f})")
             return None
         
         # ۳. قیمت باید بالای EMA200 باشه (روند صعودی بلندمدت)
         if self.last['close'] < self.last['ema200']:
-            logger.info(f"🚫 {self.last.name}: زیر EMA200")
             return None
         
         # ۴. کندل فعلی باید صعودی باشه (برگشت)
         if not self.last['close'] > self.last['open']:
-            logger.info(f"🚫 {self.last.name}: کندل نزولی")
             return None
         
         # ۵. حجم باید بالا باشه (پانیک سل)
         if self.last['vol_ratio'] < 1.5:
-            logger.info(f"🚫 {self.last.name}: حجم کم ({self.last['vol_ratio']:.1f}x)")
             return None
         
         # ۶. کف کندل فعلی باید از کف قبلی بالاتر باشه (Higher Low)
         if self.last['low'] <= self.prev['low']:
-            logger.info(f"🚫 {self.last.name}: Higher Low نیست")
             return None
         
         # ✅ همه شرایط برقرار
