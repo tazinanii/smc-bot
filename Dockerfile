@@ -7,7 +7,6 @@ RUN apt-get update && apt-get install -y gcc && rm -rf /var/lib/apt/lists/*
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY trading_bot.py .
-COPY backtest.py .
+COPY bot.py .
 
-CMD ["python", "trading_bot.py"]
+CMD ["python", "bot.py"]
