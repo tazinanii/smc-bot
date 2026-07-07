@@ -137,7 +137,7 @@ class Indicators:
         return df
 
 # ═════════════════════════════════════════════════════════════════
-# استراتژی: EMA Cross (نرم‌تر)
+# استراتژی: EMA Cross (کراس در ۳ کندل اخیر)
 # ═════════════════════════════════════════════════════════════════
 
 class SignalResult:
@@ -167,24 +167,32 @@ class StrategyEngine:
     
     def ema_cross(self) -> Optional[SignalResult]:
         """
-        🔥 استراتژی: EMA8 کراس بالای EMA21 (نرم‌تر)
+        🔥 استراتژی: EMA8 کراس بالای EMA21 در ۳ کندل اخیر
         """
         
-        # EMA8 باید از پایین به بالای EMA21 کراس کرده باشه
-        prev_cross = self.prev['ema8'] <= self.prev['ema21']
-        now_cross = self.last['ema8'] > self.last['ema21']
+        # چک کردن کراس در ۳ کندل اخیر
+        cross_found = False
+        cross_index = -1
         
-        if not (prev_cross and now_cross):
+        for i in range(1, 4):  # ۱ تا ۳ کندل اخیر
+            prev = self.df.iloc[-i-1]
+            curr = self.df.iloc[-i]
+            if prev['ema8'] <= prev['ema21'] and curr['ema8'] > curr['ema21']:
+                cross_found = True
+                cross_index = -i
+                break
+        
+        if not cross_found:
             return None
         
-        # کندل صعودی
+        # کندل فعلی باید صعودی باشه
         if not self.last['close'] > self.last['open']:
             return None
         
         confidence = 50
         reasons = ['EMA8 کراس EMA21', 'کندل صعودی']
         
-        # RSI < ۶۰ (از ۵۰ به ۶۰ افزایش)
+        # RSI < ۶۰
         if self.last['rsi'] < 60:
             confidence += 10
             reasons.append(f'RSI={self.last["rsi"]:.1f}')
@@ -192,7 +200,7 @@ class StrategyEngine:
             confidence -= 10
             reasons.append(f'⚠️ RSI بالا ({self.last["rsi"]:.1f})')
         
-        # حجم ≥ ۰.۵x (از ۱.۰ به ۰.۵ کاهش)
+        # حجم ≥ ۰.۵x
         if self.last['vol_ratio'] >= 0.5:
             confidence += 10
             reasons.append(f'Vol={self.last["vol_ratio"]:.1f}x')
@@ -305,13 +313,21 @@ def main():
                 # دیباگ
                 last = df.iloc[-1]
                 prev = df.iloc[-2]
-                ema_cross = prev['ema8'] <= prev['ema21'] and last['ema8'] > last['ema21']
+                
+                # چک کردن کراس در ۳ کندل اخیر
+                cross_found = False
+                for i in range(1, 4):
+                    p = df.iloc[-i-1]
+                    c = df.iloc[-i]
+                    if p['ema8'] <= p['ema21'] and c['ema8'] > c['ema21']:
+                        cross_found = True
+                        break
                 
                 logger.info(
                     f"🔍 {symbol} | "
                     f"قیمت:{last['close']:.4f} | "
                     f"EMA8:{last['ema8']:.4f} EMA21:{last['ema21']:.4f} | "
-                    f"Cross:{ema_cross} | "
+                    f"Cross(3c):{cross_found} | "
                     f"RSI:{last['rsi']:.1f} | "
                     f"Vol:{last['vol_ratio']:.1f}x | "
                     f"EMA21>EMA55:{last['ema21'] > last['ema55']} | "
