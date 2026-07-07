@@ -137,7 +137,7 @@ class Indicators:
         return df
 
 # ═════════════════════════════════════════════════════════════════
-# استراتژی: Buy the Dip (نرم‌تر)
+# استراتژی‌ها
 # ═════════════════════════════════════════════════════════════════
 
 class SignalResult:
@@ -165,57 +165,42 @@ class StrategyEngine:
         self.prev = df.iloc[-2]
         self.prev2 = df.iloc[-3]
     
+    # ─── استراتژی ۱: Buy the Dip ─────────────────────────────
     def buy_the_dip(self) -> Optional[SignalResult]:
-        """
-        🔥 استراتژی: Buy the Dip (نرم‌تر)
-        """
+        """خرید روی کف در روند صعودی"""
         
-        # ۱. Dip باید ≥ ۲% (از ۳% به ۲% کاهش)
-        recent_high = self.df['high'].iloc[-50:].max()
-        dip_pct = (recent_high - self.last['close']) / recent_high * 100
-        
-        if dip_pct < 2.0:
-            return None
-        
-        # ۲. RSI باید < ۴۵ (از ۴۰ به ۴۵ افزایش)
-        if self.last['rsi'] > 45:
-            return None
-        
-        # ۳. قیمت باید بالای EMA200 باشه
+        # قیمت باید بالای EMA200 باشه
         if self.last['close'] < self.last['ema200']:
             return None
         
-        # ۴. کندل فعلی باید صعودی باشه
+        # Dip ≥ ۲%
+        recent_high = self.df['high'].iloc[-50:].max()
+        dip_pct = (recent_high - self.last['close']) / recent_high * 100
+        if dip_pct < 2.0:
+            return None
+        
+        # RSI < ۴۵
+        if self.last['rsi'] > 45:
+            return None
+        
+        # کندل صعودی
         if not self.last['close'] > self.last['open']:
             return None
         
-        # ۵. حجم باید ≥ ۱.۰x (از ۱.۵ به ۱.۰ کاهش)
+        # حجم ≥ ۱.۰x
         if self.last['vol_ratio'] < 1.0:
             return None
         
-        # ۶. Higher Low (اختیاری - confidence رو کم میکنه)
-        higher_low = self.last['low'] > self.prev['low']
-        
-        # ✅ همه شرایط برقرار
         confidence = 60
         reasons = [
-            f'Dip {dip_pct:.1f}% از سقف',
+            f'Dip {dip_pct:.1f}%',
             f'RSI={self.last["rsi"]:.1f}',
-            f'Vol={self.last["vol_ratio"]:.1f}x',
-            'کندل صعودی'
+            f'Vol={self.last["vol_ratio"]:.1f}x'
         ]
         
-        if higher_low:
+        if self.last['low'] > self.prev['low']:
             confidence += 10
             reasons.append('Higher Low')
-        else:
-            confidence -= 5
-            reasons.append('⚠️ Higher Low نیست')
-        
-        # اگر Dip > 5%، confidence بیشتر
-        if dip_pct > 5:
-            confidence += 10
-            reasons.append(f'Dip عمیق ({dip_pct:.1f}%)')
         
         entry = self.last['close']
         sl = self.last['low'] - self.last['atr'] * 0.5
@@ -225,8 +210,99 @@ class StrategyEngine:
         
         return SignalResult('LONG', entry, sl, tp1, tp2, 'Buy the Dip', confidence, reasons, self.df)
     
+    # ─── استراتژی ۲: Trend Reversal ──────────────────────────
+    def trend_reversal(self) -> Optional[SignalResult]:
+        """برگشت روند نزولی به صعودی"""
+        
+        # قیمت باید زیر EMA200 باشه (روند نزولی)
+        if self.last['close'] > self.last['ema200']:
+            return None
+        
+        # EMA8 باید از پایین به بالای EMA21 کراس کرده باشه
+        prev_cross = self.prev['ema8'] <= self.prev['ema21']
+        now_cross = self.last['ema8'] > self.last['ema21']
+        
+        if not (prev_cross and now_cross):
+            return None
+        
+        # RSI باید از زیر ۳۰ برگشته باشه
+        if not (self.prev2['rsi'] < 35 and self.last['rsi'] > self.prev2['rsi']):
+            return None
+        
+        # حجم بالا
+        if self.last['vol_ratio'] < 1.5:
+            return None
+        
+        # کندل صعودی قوی
+        candle_size = (self.last['close'] - self.last['open']) / self.last['open'] * 100
+        if candle_size < 0.5:
+            return None
+        
+        confidence = 65
+        reasons = [
+            'EMA8 کراس EMA21',
+            f'RSI برگشت ({self.prev2["rsi"]:.1f}→{self.last["rsi"]:.1f})',
+            f'Vol={self.last["vol_ratio"]:.1f}x',
+            f'کندل قوی ({candle_size:.1f}%)'
+        ]
+        
+        entry = self.last['close']
+        sl = self.last['low'] - self.last['atr'] * 0.5
+        risk = entry - sl
+        tp1 = entry + risk * 2
+        tp2 = entry + risk * 3
+        
+        return SignalResult('LONG', entry, sl, tp1, tp2, 'Trend Reversal', confidence, reasons, self.df)
+    
+    # ─── استراتژی ۳: Oversold Bounce ───────────────────────
+    def oversold_bounce(self) -> Optional[SignalResult]:
+        """برگشت از oversold شدید"""
+        
+        # RSI < ۳۰ (oversold شدید)
+        if self.last['rsi'] > 30:
+            return None
+        
+        # کندل صعودی
+        if not self.last['close'] > self.last['open']:
+            return None
+        
+        # حجم بالا
+        if self.last['vol_ratio'] < 1.5:
+            return None
+        
+        # قیمت باید از کف اخیر بالاتر باشه
+        recent_low = self.df['low'].iloc[-20:].min()
+        if self.last['close'] < recent_low * 1.01:
+            return None
+        
+        confidence = 70
+        reasons = [
+            f'RSI={self.last["rsi"]:.1f} (oversold)',
+            f'Vol={self.last["vol_ratio"]:.1f}x',
+            f'کف اخیر: {recent_low:.4f}'
+        ]
+        
+        entry = self.last['close']
+        sl = self.last['low'] - self.last['atr'] * 0.5
+        risk = entry - sl
+        tp1 = entry + risk * 2
+        tp2 = entry + risk * 3
+        
+        return SignalResult('LONG', entry, sl, tp1, tp2, 'Oversold Bounce', confidence, reasons, self.df)
+    
     def analyze(self):
-        return self.buy_the_dip()
+        signals = []
+        for strategy in [self.buy_the_dip, self.trend_reversal, self.oversold_bounce]:
+            try:
+                sig = strategy()
+                if sig:
+                    signals.append(sig)
+            except Exception as e:
+                pass
+        
+        if not signals:
+            return None
+        return max(signals, key=lambda x: x.confidence)
 
 # ═════════════════════════════════════════════════════════════════
 # فرمت پیام
@@ -309,12 +385,15 @@ def main():
                 # دیباگ
                 last = df.iloc[-1]
                 recent_high = df['high'].iloc[-50:].max()
+                recent_low = df['low'].iloc[-20:].min()
                 dip_pct = (recent_high - last['close']) / recent_high * 100
+                ema_cross = last['ema8'] > last['ema21'] and df.iloc[-2]['ema8'] <= df.iloc[-2]['ema21']
+                
                 logger.info(
                     f"🔍 {symbol} | "
                     f"قیمت:{last['close']:.4f} | "
-                    f"سقف:{recent_high:.4f} | "
-                    f"Dip:{dip_pct:.1f}% | "
+                    f"EMA8:{last['ema8']:.4f} EMA21:{last['ema21']:.4f} | "
+                    f"Cross:{ema_cross} | "
                     f"RSI:{last['rsi']:.1f} | "
                     f"Vol:{last['vol_ratio']:.1f}x | "
                     f"EMA200:{last['ema200']:.4f}"
