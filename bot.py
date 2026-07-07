@@ -603,4 +603,162 @@ class StrategyEngine:
         if not self.last['close'] < support * 0.99:
             return None
         
-        if not self.prev['close
+        if not self.prev['close'] < support:
+            return None
+
+        if not self.last['close'] < self.last['open']:
+            return None
+
+        confidence = 65
+        reasons = [f'S/R Flip Short', f'حمایت: {support:.4f}', f'قیمت: {self.last["close"]:.4f}']
+
+        if self.last['vol_ratio'] > 1.0:
+            confidence += 10; reasons.append(f'Vol={self.last["vol_ratio"]:.1f}x')
+
+        entry = self.last['close']
+        sl = support + self.last['atr'] * 0.5
+        risk = sl - entry
+        tp1 = entry - risk * 2
+        tp2 = entry - risk * 3.5
+
+        return SignalResult('SHORT', entry, sl, tp1, tp2, 'S/R Flip Short', confidence, reasons, self.df)
+
+
+# ═════════════════════════════════════════════════════════════════
+# موتور اصلی
+# ═════════════════════════════════════════════════════════════════
+
+class TradingBot:
+    def __init__(self):
+        self.data = DataFetcher()
+        self.notifier = TelegramNotifier(TOKEN, CHAT_ID)
+        self.sent_signals = {}
+        self.cooldown_minutes = 60
+
+    def _get_key(self, symbol, signal, strategy):
+        return f"{symbol}:{signal}:{strategy}"
+
+    def _is_cooldown(self, symbol, result):
+        key = self._get_key(symbol, result.signal, result.strategy)
+        last_sent = self.sent_signals.get(key)
+        if last_sent is None:
+            return False
+        return datetime.now(timezone.utc) - last_sent < timedelta(minutes=self.cooldown_minutes)
+
+    def _mark_sent(self, symbol, result):
+        key = self._get_key(symbol, result.signal, result.strategy)
+        self.sent_signals[key] = datetime.now(timezone.utc)
+
+    def _format_message(self, symbol, result):
+        emoji = '🟢' if result.signal == 'LONG' else '🔴'
+        direction = 'خرید' if result.signal == 'LONG' else 'فروش'
+
+        msg = emoji + " <b>سیگنال " + direction + "</b> " + emoji + "\n\n"
+        msg += "<b>ارز:</b> <code>" + symbol + "</code>\n"
+        msg += "<b>استراتژی:</b> " + result.strategy + "\n"
+        msg += "<b>اعتماد:</b> " + str(result.confidence) + "%\n\n"
+        msg += "<b>ورود:</b> <code>" + f"{result.entry:.4f}" + "</code>\n"
+        msg += "<b>استاپ:</b> <code>" + f"{result.sl:.4f}" + "</code>\n"
+        msg += "<b>تارگت 1:</b> <code>" + f"{result.tp1:.4f}" + "</code> (RR: " + str(result.rr(result.tp1)) + ")\n"
+        msg += "<b>تارگت 2:</b> <code>" + f"{result.tp2:.4f}" + "</code> (RR: " + str(result.rr(result.tp2)) + ")\n\n"
+        msg += "<b>دلایل:</b>\n"
+
+        for reason in result.reasons:
+            msg += "• " + reason + "\n"
+
+        last = result.df.iloc[-1]
+        msg += "\n<b>شاخص‌ها:</b>\n"
+        msg += "• RSI: " + f"{last['rsi']:.1f}" + "\n"
+        msg += "• MACD: " + f"{last['macd']:.4f}" + "\n"
+        msg += "• ATR: " + f"{last['atr_pct']:.2f}" + "%\n"
+        msg += "• Vol: " + f"{last['vol_ratio']:.2f}" + "x\n"
+        msg += "• BB Width: " + f"{last['bb_width']:.2f}" + "%\n"
+        msg += "• EMA8/21: " + f"{last['ema8']:.4f}" + " / " + f"{last['ema21']:.4f}" + "\n"
+        return msg
+
+    def analyze_symbol(self, symbol):
+        df = self.data.fetch(symbol, TIMEFRAME)
+        if df is None or len(df) < 60:
+            logger.warning("⚠️ دیتای ناکافی برای " + symbol)
+            return None
+
+        df = Indicators.add_all(df)
+        engine = StrategyEngine(df)
+
+        strategies = [
+            engine.ema_golden_cross,
+            engine.rsi_divergence_long,
+            engine.bb_squeeze_breakout_long,
+            engine.macd_histogram_reversal_long,
+            engine.stoch_oversold_bounce,
+            engine.fib_bounce_long,
+            engine.sr_flip_long,
+            engine.ema_death_cross,
+            engine.rsi_divergence_short,
+            engine.bb_squeeze_breakdown,
+            engine.macd_histogram_reversal_short,
+            engine.stoch_overbought_fall,
+            engine.fib_reject_short,
+            engine.sr_flip_short,
+        ]
+
+        best_signal = None
+        best_confidence = 0
+
+        for strategy in strategies:
+            try:
+                result = strategy()
+                if result and result.confidence > best_confidence:
+                    best_signal = result
+                    best_confidence = result.confidence
+            except Exception as e:
+                logger.error("❌ خطا در " + strategy.__name__ + ": " + str(e))
+
+        return best_signal
+
+    def run_once(self):
+        logger.info("🚀 شروع اسکن " + str(len(SYMBOLS)) + " نماد...")
+        signals_found = 0
+
+        for symbol in SYMBOLS:
+            result = self.analyze_symbol(symbol)
+            if result is None:
+                continue
+
+            if result.confidence < 55:
+                continue
+
+            if self._is_cooldown(symbol, result):
+                logger.info("⏳ " + symbol + ": " + result.strategy + " در کول‌داون")
+                continue
+
+            msg = self._format_message(symbol, result)
+            self.notifier.send(msg)
+            self._mark_sent(symbol, result)
+            signals_found += 1
+            logger.info("✅ سیگنال " + result.signal + " برای " + symbol + " (" + result.strategy + ") ارسال شد")
+
+        logger.info("📊 اسکن تمام شد. " + str(signals_found) + " سیگنال یافت شد.")
+
+    def run_loop(self, interval_minutes=15):
+        logger.info("🤖 ربات شروع به کار کرد...")
+        while True:
+            try:
+                self.run_once()
+            except Exception as e:
+                logger.error("❌ خطا در حلقه اصلی: " + str(e))
+
+            logger.info("⏳ انتظار " + str(interval_minutes) + " دقیقه...")
+            time.sleep(interval_minutes * 60)
+
+
+# ═════════════════════════════════════════════════════════════════
+# اجرا
+# ═════════════════════════════════════════════════════════════════
+
+if __name__ == '__main__':
+    bot = TradingBot()
+    # برای اجرای یک‌باره:
+    bot.run_once()
+    # برای اجرای مداوم:
+    # bot.run_loop()
