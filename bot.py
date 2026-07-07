@@ -16,7 +16,6 @@ TOKEN = os.environ.get('TOKEN', '')
 CHAT_ID = os.environ.get('CHAT_ID', '')
 TIMEFRAME = os.environ.get('TIMEFRAME', '15m')
 
-# ⚠️ MATIC به POL تغییر نام داده
 SYMBOLS = [
     'BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 
     'XRP/USDT', 'DOGE/USDT', 'ADA/USDT', 'AVAX/USDT',
@@ -58,7 +57,7 @@ class TelegramNotifier:
         self.send(f"🚀 <b>ربات فعال شد!</b>\n📊 {len(SYMBOLS)} جفت‌ارز | ⏱️ {TIMEFRAME}")
 
 # ═════════════════════════════════════════════════════════════════
-# دیتا — فقط KuCoin
+# دیتا
 # ═════════════════════════════════════════════════════════════════
 
 class DataFetcher:
@@ -138,7 +137,7 @@ class Indicators:
         return df
 
 # ═════════════════════════════════════════════════════════════════
-# استراتژی: Buy the Dip
+# استراتژی: Buy the Dip (نرم‌تر)
 # ═════════════════════════════════════════════════════════════════
 
 class SignalResult:
@@ -168,46 +167,55 @@ class StrategyEngine:
     
     def buy_the_dip(self) -> Optional[SignalResult]:
         """
-        🔥 استراتژی نهایی: Buy the Dip
-        فقط وقتی قیمت افتاده و oversold شده
+        🔥 استراتژی: Buy the Dip (نرم‌تر)
         """
         
-        # ۱. قیمت باید حداقل ۳% از سقف ۵۰ کندل اخیر افتاده باشه
+        # ۱. Dip باید ≥ ۲% (از ۳% به ۲% کاهش)
         recent_high = self.df['high'].iloc[-50:].max()
         dip_pct = (recent_high - self.last['close']) / recent_high * 100
         
-        if dip_pct < 3.0:
+        if dip_pct < 2.0:
             return None
         
-        # ۲. RSI باید < ۴۰ باشه (oversold)
-        if self.last['rsi'] > 40:
+        # ۲. RSI باید < ۴۵ (از ۴۰ به ۴۵ افزایش)
+        if self.last['rsi'] > 45:
             return None
         
-        # ۳. قیمت باید بالای EMA200 باشه (روند صعودی بلندمدت)
+        # ۳. قیمت باید بالای EMA200 باشه
         if self.last['close'] < self.last['ema200']:
             return None
         
-        # ۴. کندل فعلی باید صعودی باشه (برگشت)
+        # ۴. کندل فعلی باید صعودی باشه
         if not self.last['close'] > self.last['open']:
             return None
         
-        # ۵. حجم باید بالا باشه (پانیک سل)
-        if self.last['vol_ratio'] < 1.5:
+        # ۵. حجم باید ≥ ۱.۰x (از ۱.۵ به ۱.۰ کاهش)
+        if self.last['vol_ratio'] < 1.0:
             return None
         
-        # ۶. کف کندل فعلی باید از کف قبلی بالاتر باشه (Higher Low)
-        if self.last['low'] <= self.prev['low']:
-            return None
+        # ۶. Higher Low (اختیاری - confidence رو کم میکنه)
+        higher_low = self.last['low'] > self.prev['low']
         
         # ✅ همه شرایط برقرار
-        confidence = 70
+        confidence = 60
         reasons = [
             f'Dip {dip_pct:.1f}% از سقف',
-            f'RSI={self.last["rsi"]:.1f} (oversold)',
+            f'RSI={self.last["rsi"]:.1f}',
             f'Vol={self.last["vol_ratio"]:.1f}x',
-            'Higher Low',
             'کندل صعودی'
         ]
+        
+        if higher_low:
+            confidence += 10
+            reasons.append('Higher Low')
+        else:
+            confidence -= 5
+            reasons.append('⚠️ Higher Low نیست')
+        
+        # اگر Dip > 5%، confidence بیشتر
+        if dip_pct > 5:
+            confidence += 10
+            reasons.append(f'Dip عمیق ({dip_pct:.1f}%)')
         
         entry = self.last['close']
         sl = self.last['low'] - self.last['atr'] * 0.5
