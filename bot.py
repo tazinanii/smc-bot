@@ -137,7 +137,7 @@ class Indicators:
         return df
 
 # ═════════════════════════════════════════════════════════════════
-# استراتژی‌ها
+# استراتژی: EMA Cross (نرم‌تر)
 # ═════════════════════════════════════════════════════════════════
 
 class SignalResult:
@@ -165,58 +165,10 @@ class StrategyEngine:
         self.prev = df.iloc[-2]
         self.prev2 = df.iloc[-3]
     
-    # ─── استراتژی ۱: Buy the Dip ─────────────────────────────
-    def buy_the_dip(self) -> Optional[SignalResult]:
-        """خرید روی کف در روند صعودی"""
-        
-        # قیمت باید بالای EMA200 باشه
-        if self.last['close'] < self.last['ema200']:
-            return None
-        
-        # Dip ≥ ۲%
-        recent_high = self.df['high'].iloc[-50:].max()
-        dip_pct = (recent_high - self.last['close']) / recent_high * 100
-        if dip_pct < 2.0:
-            return None
-        
-        # RSI < ۴۵
-        if self.last['rsi'] > 45:
-            return None
-        
-        # کندل صعودی
-        if not self.last['close'] > self.last['open']:
-            return None
-        
-        # حجم ≥ ۱.۰x
-        if self.last['vol_ratio'] < 1.0:
-            return None
-        
-        confidence = 60
-        reasons = [
-            f'Dip {dip_pct:.1f}%',
-            f'RSI={self.last["rsi"]:.1f}',
-            f'Vol={self.last["vol_ratio"]:.1f}x'
-        ]
-        
-        if self.last['low'] > self.prev['low']:
-            confidence += 10
-            reasons.append('Higher Low')
-        
-        entry = self.last['close']
-        sl = self.last['low'] - self.last['atr'] * 0.5
-        risk = entry - sl
-        tp1 = entry + risk * 2
-        tp2 = entry + risk * 3
-        
-        return SignalResult('LONG', entry, sl, tp1, tp2, 'Buy the Dip', confidence, reasons, self.df)
-    
-    # ─── استراتژی ۲: Trend Reversal ──────────────────────────
-    def trend_reversal(self) -> Optional[SignalResult]:
-        """برگشت روند نزولی به صعودی"""
-        
-        # قیمت باید زیر EMA200 باشه (روند نزولی)
-        if self.last['close'] > self.last['ema200']:
-            return None
+    def ema_cross(self) -> Optional[SignalResult]:
+        """
+        🔥 استراتژی: EMA8 کراس بالای EMA21 (نرم‌تر)
+        """
         
         # EMA8 باید از پایین به بالای EMA21 کراس کرده باشه
         prev_cross = self.prev['ema8'] <= self.prev['ema21']
@@ -225,84 +177,52 @@ class StrategyEngine:
         if not (prev_cross and now_cross):
             return None
         
-        # RSI باید از زیر ۳۰ برگشته باشه
-        if not (self.prev2['rsi'] < 35 and self.last['rsi'] > self.prev2['rsi']):
-            return None
-        
-        # حجم بالا
-        if self.last['vol_ratio'] < 1.5:
-            return None
-        
-        # کندل صعودی قوی
-        candle_size = (self.last['close'] - self.last['open']) / self.last['open'] * 100
-        if candle_size < 0.5:
-            return None
-        
-        confidence = 65
-        reasons = [
-            'EMA8 کراس EMA21',
-            f'RSI برگشت ({self.prev2["rsi"]:.1f}→{self.last["rsi"]:.1f})',
-            f'Vol={self.last["vol_ratio"]:.1f}x',
-            f'کندل قوی ({candle_size:.1f}%)'
-        ]
-        
-        entry = self.last['close']
-        sl = self.last['low'] - self.last['atr'] * 0.5
-        risk = entry - sl
-        tp1 = entry + risk * 2
-        tp2 = entry + risk * 3
-        
-        return SignalResult('LONG', entry, sl, tp1, tp2, 'Trend Reversal', confidence, reasons, self.df)
-    
-    # ─── استراتژی ۳: Oversold Bounce ───────────────────────
-    def oversold_bounce(self) -> Optional[SignalResult]:
-        """برگشت از oversold شدید"""
-        
-        # RSI < ۳۰ (oversold شدید)
-        if self.last['rsi'] > 30:
-            return None
-        
         # کندل صعودی
         if not self.last['close'] > self.last['open']:
             return None
         
-        # حجم بالا
-        if self.last['vol_ratio'] < 1.5:
-            return None
+        confidence = 50
+        reasons = ['EMA8 کراس EMA21', 'کندل صعودی']
         
-        # قیمت باید از کف اخیر بالاتر باشه
-        recent_low = self.df['low'].iloc[-20:].min()
-        if self.last['close'] < recent_low * 1.01:
-            return None
+        # RSI < ۶۰ (از ۵۰ به ۶۰ افزایش)
+        if self.last['rsi'] < 60:
+            confidence += 10
+            reasons.append(f'RSI={self.last["rsi"]:.1f}')
+        else:
+            confidence -= 10
+            reasons.append(f'⚠️ RSI بالا ({self.last["rsi"]:.1f})')
         
-        confidence = 70
-        reasons = [
-            f'RSI={self.last["rsi"]:.1f} (oversold)',
-            f'Vol={self.last["vol_ratio"]:.1f}x',
-            f'کف اخیر: {recent_low:.4f}'
-        ]
+        # حجم ≥ ۰.۵x (از ۱.۰ به ۰.۵ کاهش)
+        if self.last['vol_ratio'] >= 0.5:
+            confidence += 10
+            reasons.append(f'Vol={self.last["vol_ratio"]:.1f}x')
+        else:
+            confidence -= 5
+            reasons.append(f'⚠️ Vol کم ({self.last["vol_ratio"]:.1f}x)')
+        
+        # EMA21 > EMA55
+        if self.last['ema21'] > self.last['ema55']:
+            confidence += 15
+            reasons.append('EMA21 > EMA55')
+        
+        # قیمت بالای EMA200
+        if self.last['close'] > self.last['ema200']:
+            confidence += 10
+            reasons.append('قیمت > EMA200')
+        
+        if confidence < 50:
+            return None
         
         entry = self.last['close']
-        sl = self.last['low'] - self.last['atr'] * 0.5
+        sl = self.last['ema21'] - self.last['atr'] * 0.5
         risk = entry - sl
         tp1 = entry + risk * 2
         tp2 = entry + risk * 3
         
-        return SignalResult('LONG', entry, sl, tp1, tp2, 'Oversold Bounce', confidence, reasons, self.df)
+        return SignalResult('LONG', entry, sl, tp1, tp2, 'EMA Cross', confidence, reasons, self.df)
     
     def analyze(self):
-        signals = []
-        for strategy in [self.buy_the_dip, self.trend_reversal, self.oversold_bounce]:
-            try:
-                sig = strategy()
-                if sig:
-                    signals.append(sig)
-            except Exception as e:
-                pass
-        
-        if not signals:
-            return None
-        return max(signals, key=lambda x: x.confidence)
+        return self.ema_cross()
 
 # ═════════════════════════════════════════════════════════════════
 # فرمت پیام
@@ -384,10 +304,8 @@ def main():
                 
                 # دیباگ
                 last = df.iloc[-1]
-                recent_high = df['high'].iloc[-50:].max()
-                recent_low = df['low'].iloc[-20:].min()
-                dip_pct = (recent_high - last['close']) / recent_high * 100
-                ema_cross = last['ema8'] > last['ema21'] and df.iloc[-2]['ema8'] <= df.iloc[-2]['ema21']
+                prev = df.iloc[-2]
+                ema_cross = prev['ema8'] <= prev['ema21'] and last['ema8'] > last['ema21']
                 
                 logger.info(
                     f"🔍 {symbol} | "
@@ -396,7 +314,8 @@ def main():
                     f"Cross:{ema_cross} | "
                     f"RSI:{last['rsi']:.1f} | "
                     f"Vol:{last['vol_ratio']:.1f}x | "
-                    f"EMA200:{last['ema200']:.4f}"
+                    f"EMA21>EMA55:{last['ema21'] > last['ema55']} | "
+                    f"قیمت>EMA200:{last['close'] > last['ema200']}"
                 )
                 
                 engine = StrategyEngine(df)
