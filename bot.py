@@ -6,7 +6,7 @@ import time
 import os
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Optional, List, Tuple
+from typing import Optional, List
 
 # ═════════════════════════════════════════════════════════════════
 # تنظیمات
@@ -134,18 +134,13 @@ class Indicators:
         df['vol_ma'] = df['volume'].rolling(20).mean()
         df['vol_ratio'] = df['volume'] / df['vol_ma']
         
-        # فاصله از EMA
-        df['dist_ema8'] = (df['close'] - df['ema8']) / df['ema8'] * 100
-        df['dist_ema21'] = (df['close'] - df['ema21']) / df['ema21'] * 100
-        
-        # Swing High/Low
-        df['swing_high'] = df['high'].rolling(5, center=True).max() == df['high']
-        df['swing_low'] = df['low'].rolling(5, center=True).min() == df['low']
+        # 🔥 جدید: فاصله از سقف اخیر
+        df['dist_from_high'] = (df['close'] - df['high'].rolling(50).max()) / df['high'].rolling(50).max() * 100
         
         return df
 
 # ═════════════════════════════════════════════════════════════════
-# استراتژی‌ها — فقط سیگنال روی کف
+# استراتژی: فقط "Buy the Dip"
 # ═════════════════════════════════════════════════════════════════
 
 class SignalResult:
@@ -173,198 +168,65 @@ class StrategyEngine:
         self.prev = df.iloc[-2]
         self.prev2 = df.iloc[-3]
     
-    def is_uptrend(self) -> bool:
-        """روند صعودی بلندمدت"""
-        return self.last['ema21'] > self.last['ema55'] and self.last['close'] > self.last['ema200']
-    
-    def is_downtrend(self) -> bool:
-        """روند نزولی"""
-        return self.last['ema21'] < self.last['ema55']
-    
-    def find_support(self, lookback: int = 30) -> float:
-        """پیدا کردن سطح حمایت اخیر"""
-        recent = self.df.iloc[-lookback:]
-        lows = recent[recent['swing_low']]['low']
-        if len(lows) > 0:
-            return lows.iloc[-1]
-        return recent['low'].min()
-    
-    def find_resistance(self, lookback: int = 30) -> float:
-        """پیدا کردن سطح مقاومت اخیر"""
-        recent = self.df.iloc[-lookback:]
-        highs = recent[recent['swing_high']]['high']
-        if len(highs) > 0:
-            return highs.iloc[-1]
-        return recent['high'].max()
-    
-    def support_bounce(self) -> Optional[SignalResult]:
+    def buy_the_dip(self) -> Optional[SignalResult]:
         """
-        🔥 استراتژی ۱: برخورد از سطح حمایت
-        قیمت باید به سطح حمایت برخورد کرده و برگشته باشه
+        🔥 استراتژی نهایی: Buy the Dip
+        فقط وقتی قیمت افتاده و oversold شده
         """
-        if not self.is_uptrend():
+        
+        # ۱. قیمت باید حداقل ۳% از سقف ۵۰ کندل اخیر افتاده باشه
+        recent_high = self.df['high'].iloc[-50:].max()
+        dip_pct = (recent_high - self.last['close']) / recent_high * 100
+        
+        if dip_pct < 3.0:
+            logger.info(f"🚫 {self.last.name}: Dip کافی نیست ({dip_pct:.1f}%)")
             return None
         
-        support = self.find_support(30)
-        
-        # آیا قیمت به ساپورت نزدیک شده؟
-        dist_to_support = (self.last['close'] - support) / support * 100
-        
-        # باید نزدیک ساپورت باشه (نه خیلی دور)
-        if dist_to_support > 1.5:
+        # ۲. RSI باید < ۴۰ باشه (oversold)
+        if self.last['rsi'] > 40:
+            logger.info(f"🚫 {self.last.name}: RSI بالاست ({self.last['rsi']:.1f})")
             return None
         
-        # باید از ساپورت برگشته باشه (کندل صعودی)
-        if not (self.last['close'] > self.last['open'] and self.last['low'] <= support * 1.005):
+        # ۳. قیمت باید بالای EMA200 باشه (روند صعودی بلندمدت)
+        if self.last['close'] < self.last['ema200']:
+            logger.info(f"🚫 {self.last.name}: زیر EMA200")
             return None
         
-        # حجم باید بالا باشه
-        if self.last['vol_ratio'] < 1.2:
-            return None
-        
-        confidence = 70
-        reasons = [f'Support Bounce @ {support:.4f}']
-        
-        if self.last['rsi'] < 50:
-            confidence += 10
-            reasons.append(f'RSI={self.last["rsi"]:.1f} (oversold)')
-        
-        entry = self.last['close']
-        sl = support - self.last['atr'] * 1.0
-        risk = entry - sl
-        tp1 = entry + risk * 2
-        tp2 = entry + risk * 3
-        
-        return SignalResult('LONG', entry, sl, tp1, tp2, 'Support Bounce', confidence, reasons, self.df)
-    
-    def double_bottom(self) -> Optional[SignalResult]:
-        """
-        🔥 استراتژی ۲: دو کف
-        دو کف تقریباً هم‌سطح با کندل صعودی
-        """
-        if not self.is_uptrend():
-            return None
-        
-        # پیدا کردن دو کف اخیر
-        lows = self.df[self.df['swing_low']]['low']
-        if len(lows) < 2:
-            return None
-        
-        low1 = lows.iloc[-2]
-        low2 = lows.iloc[-1]
-        
-        # دو کف باید نزدیک باشن (تفاوت < 1%)
-        if abs(low1 - low2) / low1 > 0.01:
-            return None
-        
-        # کف دوم باید بالاتر یا مساوی باشه
-        if low2 > low1 * 1.005:
-            return None
-        
-        # کندل فعلی باید صعودی باشه
-        if not (self.last['close'] > self.last['open'] and self.last['close'] > low2):
-            return None
-        
-        confidence = 75
-        reasons = [f'Double Bottom ({low1:.4f} / {low2:.4f})']
-        
-        if self.last['vol_ratio'] > 1.5:
-            confidence += 10
-            reasons.append(f'Vol={self.last["vol_ratio"]:.1f}x')
-        
-        entry = self.last['close']
-        sl = low2 - self.last['atr'] * 0.5
-        risk = entry - sl
-        tp1 = entry + risk * 2.5
-        tp2 = entry + risk * 4
-        
-        return SignalResult('LONG', entry, sl, tp1, tp2, 'Double Bottom', confidence, reasons, self.df)
-    
-    def higher_low_pullback(self) -> Optional[SignalResult]:
-        """
-        🔥 استراتژی ۳: کف بالاتر در روند صعودی
-        Pullback به EMA21 در روند صعودی
-        """
-        if not self.is_uptrend():
-            return None
-        
-        # قیمت باید به EMA21 نزدیک شده باشه
-        dist_to_ema21 = abs(self.last['close'] - self.last['ema21']) / self.last['ema21'] * 100
-        if dist_to_ema21 > 1.0:
-            return None
-        
-        # کندل صعودی
+        # ۴. کندل فعلی باید صعودی باشه (برگشت)
         if not self.last['close'] > self.last['open']:
+            logger.info(f"🚫 {self.last.name}: کندل نزولی")
             return None
         
-        # کف بالاتر
-        recent_lows = self.df[self.df['swing_low']]['low']
-        if len(recent_lows) < 2:
+        # ۵. حجم باید بالا باشه (پانیک سل)
+        if self.last['vol_ratio'] < 1.5:
+            logger.info(f"🚫 {self.last.name}: حجم کم ({self.last['vol_ratio']:.1f}x)")
             return None
         
-        if recent_lows.iloc[-1] <= recent_lows.iloc[-2]:
+        # ۶. کف کندل فعلی باید از کف قبلی بالاتر باشه (Higher Low)
+        if self.last['low'] <= self.prev['low']:
+            logger.info(f"🚫 {self.last.name}: Higher Low نیست")
             return None
         
-        confidence = 65
-        reasons = [f'Higher Low Pullback to EMA21']
-        
-        if self.last['rsi'] < 55:
-            confidence += 10
-            reasons.append(f'RSI={self.last["rsi"]:.1f}')
+        # ✅ همه شرایط برقرار
+        confidence = 70
+        reasons = [
+            f'Dip {dip_pct:.1f}% از سقف',
+            f'RSI={self.last["rsi"]:.1f} (oversold)',
+            f'Vol={self.last["vol_ratio"]:.1f}x',
+            'Higher Low',
+            'کندل صعودی'
+        ]
         
         entry = self.last['close']
-        sl = self.last['ema21'] - self.last['atr'] * 1.0
+        sl = self.last['low'] - self.last['atr'] * 0.5
         risk = entry - sl
         tp1 = entry + risk * 2
         tp2 = entry + risk * 3
         
-        return SignalResult('LONG', entry, sl, tp1, tp2, 'HL Pullback', confidence, reasons, self.df)
-    
-    def ema_bounce(self) -> Optional[SignalResult]:
-        """
-        🔥 استراتژی ۴: برخورد از EMA در روند صعودی
-        """
-        if not self.is_uptrend():
-            return None
-        
-        # قیمت باید به EMA55 نزدیک شده باشه
-        if self.last['close'] > self.last['ema55'] * 1.02:
-            return None
-        
-        if self.last['low'] > self.last['ema55']:
-            return None
-        
-        # برخورد کرده و برگشته
-        if not (self.last['close'] > self.last['open'] and self.last['close'] > self.last['ema55']):
-            return None
-        
-        confidence = 70
-        reasons = [f'EMA55 Bounce ({self.last["ema55"]:.4f})']
-        
-        if self.last['vol_ratio'] > 1.2:
-            confidence += 10
-        
-        entry = self.last['close']
-        sl = self.last['ema55'] - self.last['atr'] * 0.5
-        risk = entry - sl
-        tp1 = entry + risk * 2
-        tp2 = entry + risk * 3.5
-        
-        return SignalResult('LONG', entry, sl, tp1, tp2, 'EMA Bounce', confidence, reasons, self.df)
+        return SignalResult('LONG', entry, sl, tp1, tp2, 'Buy the Dip', confidence, reasons, self.df)
     
     def analyze(self):
-        signals = []
-        for strategy in [self.support_bounce, self.double_bottom, self.higher_low_pullback, self.ema_bounce]:
-            try:
-                sig = strategy()
-                if sig:
-                    signals.append(sig)
-            except Exception as e:
-                pass
-        
-        if not signals:
-            return None
-        return max(signals, key=lambda x: x.confidence)
+        return self.buy_the_dip()
 
 # ═════════════════════════════════════════════════════════════════
 # فرمت پیام
@@ -446,15 +308,16 @@ def main():
                 
                 # دیباگ
                 last = df.iloc[-1]
-                support = StrategyEngine(df).find_support(30)
+                recent_high = df['high'].iloc[-50:].max()
+                dip_pct = (recent_high - last['close']) / recent_high * 100
                 logger.info(
                     f"🔍 {symbol} | "
-                    f"قیمت:{last['close']:.4f} "
-                    f"EMA21:{last['ema21']:.4f} "
-                    f"EMA55:{last['ema55']:.4f} "
-                    f"Support:{support:.4f} "
-                    f"RSI:{last['rsi']:.1f} "
-                    f"Uptrend:{last['ema21'] > last['ema55']}"
+                    f"قیمت:{last['close']:.4f} | "
+                    f"سقف:{recent_high:.4f} | "
+                    f"Dip:{dip_pct:.1f}% | "
+                    f"RSI:{last['rsi']:.1f} | "
+                    f"Vol:{last['vol_ratio']:.1f}x | "
+                    f"EMA200:{last['ema200']:.4f}"
                 )
                 
                 engine = StrategyEngine(df)
